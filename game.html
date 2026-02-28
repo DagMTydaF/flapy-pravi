@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🦔 Underground Flappy</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: hsl(25, 30%, 8%);
+    color: hsl(35, 60%, 85%);
+    font-family: 'Fredoka', sans-serif;
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  h1 { font-size: 1.875rem; font-weight: 700; color: hsl(35, 80%, 50%); letter-spacing: 0.05em; margin-bottom: 1.5rem; }
+  .game-wrap { position: relative; }
+  canvas {
+    border-radius: 0.75rem;
+    border: 2px solid hsl(25, 20%, 20%);
+    cursor: pointer;
+    box-shadow: 0 0 40px rgba(180,120,40,0.15);
+    display: block;
+  }
+  .overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; border-radius: 0.75rem;
+    backdrop-filter: blur(4px); pointer-events: none;
+  }
+  .overlay-idle { background: hsla(25, 30%, 8%, 0.7); }
+  .overlay-dead { background: hsla(25, 30%, 8%, 0.8); }
+  .overlay.hidden { display: none; }
+  .score-float {
+    position: absolute; top: 1rem; left: 50%; transform: translateX(-50%);
+    font-size: 2.25rem; font-weight: 700; color: hsl(35, 80%, 50%);
+    text-shadow: 0 2px 4px rgba(0,0,0,0.8); pointer-events: none;
+  }
+  .score-float.hidden { display: none; }
+  .t-primary { color: hsl(35, 80%, 50%); }
+  .t-accent { color: hsl(15, 70%, 45%); }
+  .t-muted { color: hsl(30, 20%, 50%); font-size: 0.875rem; }
+  .t-fg { color: hsl(35, 60%, 85%); }
+  .t-xl { font-size: 1.25rem; }
+  .t-2xl { font-size: 1.5rem; font-weight: 700; }
+  .t-3xl { font-size: 1.875rem; font-weight: 700; }
+  .mb-2 { margin-bottom: 0.5rem; }
+  .mt-1 { margin-top: 0.25rem; }
+  .mt-4 { margin-top: 1rem; }
+  .hint { color: hsl(30, 20%, 50%); font-size: 0.875rem; margin-top: 1.5rem; }
+</style>
+</head>
+<body>
+  <h1>🦔 Underground Flappy</h1>
+  <div class="game-wrap">
+    <canvas id="c" width="400" height="600"></canvas>
+    <div class="score-float" id="scoreFloat"></div>
+    <div class="overlay overlay-idle" id="idleOverlay">
+      <p class="t-2xl t-primary mb-2">Klikni za početak!</p>
+      <p class="t-muted">Space / Klik / Tap</p>
+    </div>
+    <div class="overlay overlay-dead hidden" id="deadOverlay">
+      <p class="t-3xl t-accent mb-2">Game Over!</p>
+      <p class="t-xl t-fg" id="finalScore"></p>
+      <p class="t-muted mt-1" id="bestScore"></p>
+      <p class="t-muted mt-4">Klikni za ponovnu igru</p>
+    </div>
+  </div>
+  <p class="hint">Provuci krticu kroz podzemne tunele!</p>
+<script>
+(function(){
+  const W=400,H=600,GRAVITY=0.45,JUMP=-7.5,PIPE_W=60,PIPE_GAP=150,
+    BASE_SPEED=2.5,PIPE_INT=180,MOLE=28,SPEED_INC=0.3,SPEED_N=5;
+  const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+  const idleOv=document.getElementById('idleOverlay'),deadOv=document.getElementById('deadOverlay');
+  const scoreFloat=document.getElementById('scoreFloat'),finalScoreEl=document.getElementById('finalScore'),bestScoreEl=document.getElementById('bestScore');
+  let moleY=H/2,vel=0,pipes=[],frame=0,score=0,state='idle',
+    best=parseInt(localStorage.getItem('flappy_best')||'0'),pipeSpeed=BASE_SPEED;
+  let audioCtx=null,bgOsc=null;
+  function getAudio(){if(!audioCtx)audioCtx=new AudioContext();return audioCtx;}
+  function playNote(f,d,v=0.1,t='sine'){
+    const c=getAudio(),o=c.createOscillator(),g=c.createGain();
+    o.type=t;o.frequency.setValueAtTime(f,c.currentTime);
+    g.gain.setValueAtTime(v,c.currentTime);g.gain.exponentialRampToValueAtTime(0.001,c.currentTime+d);
+    o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+d);
+  }
+  function startBg(){
+    const c=getAudio();if(bgOsc)return;
+    const o=c.createOscillator(),g=c.createGain();
+    o.type='triangle';o.frequency.setValueAtTime(110,c.currentTime);g.gain.setValueAtTime(0.04,c.currentTime);
+    o.connect(g).connect(c.destination);o.start();
+    const l=c.createOscillator(),lg=c.createGain();
+    l.frequency.setValueAtTime(2,c.currentTime);lg.gain.setValueAtTime(30,c.currentTime);
+    l.connect(lg).connect(o.frequency);l.start();
+    bgOsc={osc:o,gain:g};
+  }
+  function stopBg(){if(bgOsc){bgOsc.osc.stop();bgOsc=null;}}
+  function reset(){
+    moleY=H/2;vel=0;pipes=[];frame=0;score=0;pipeSpeed=BASE_SPEED;state='playing';
+    idleOv.classList.add('hidden');deadOv.classList.add('hidden');
+    scoreFloat.classList.remove('hidden');scoreFloat.textContent='0';
+    startBg();
+  }
+  function jump(){
+    if(state==='idle'){reset();vel=JUMP;playNote(440,0.1,0.08);}
+    else if(state==='playing'){vel=JUMP;playNote(440,0.1,0.08);}
+    else{reset();}
+  }
+  function drawRock(x,y,w,h,fromTop){
+    const gr=ctx.createLinearGradient(x,y,x+w,y);
+    gr.addColorStop(0,'#3d2b1f');gr.addColorStop(0.5,'#5c3d2e');gr.addColorStop(1,'#3d2b1f');
+    ctx.fillStyle=gr;ctx.fillRect(x,y,w,h);
+    ctx.fillStyle='#4a3228';
+    const tipY=fromTop?y+h:y,baseY=fromTop?y+h-20:y+20;
+    for(let i=0;i<3;i++){const px=x+10+i*20;ctx.beginPath();ctx.moveTo(px-8,baseY);ctx.lineTo(px,fromTop?tipY+5:tipY-5);ctx.lineTo(px+8,baseY);ctx.fill();}
+    ctx.strokeStyle='rgba(0,0,0,0.15)';ctx.lineWidth=1;
+    for(let i=0;i<4;i++){const ly=y+(h/5)*(i+0.5);ctx.beginPath();ctx.moveTo(x+5,ly);ctx.lineTo(x+w-5,ly+3);ctx.stroke();}
+  }
+  function drawMole(x,y){
+    ctx.fillStyle='#8B6914';ctx.beginPath();ctx.ellipse(x,y,MOLE,MOLE*0.8,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#C4A44A';ctx.beginPath();ctx.ellipse(x+4,y+2,MOLE*0.5,MOLE*0.45,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(x+8,y-8,6,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#111';ctx.beginPath();ctx.arc(x+9,y-7,3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#e8836b';ctx.beginPath();ctx.arc(x+18,y-2,4,0,Math.PI*2);ctx.fill();
+    const ca=Math.sin(vel*0.3)*0.3;ctx.strokeStyle='#8B6914';ctx.lineWidth=2.5;ctx.lineCap='round';
+    for(let i=-1;i<=1;i++){ctx.beginPath();ctx.moveTo(x-12,y+12+i*5);ctx.lineTo(x-22+Math.cos(ca)*3,y+14+i*6);ctx.stroke();}
+  }
+  function loop(){
+    if(state==='playing'){
+      vel+=GRAVITY;moleY+=vel;frame++;
+      if(frame%PIPE_INT===0){const gy=100+Math.random()*(H-200-PIPE_GAP);pipes.push({x:W,gapY:gy,scored:false});}
+      for(const p of pipes){
+        p.x-=pipeSpeed;
+        if(!p.scored&&p.x+PIPE_W<80){
+          p.scored=true;score++;
+          if(score%SPEED_N===0)pipeSpeed+=SPEED_INC;
+          playNote(600+score*20,0.15,0.12,'square');
+          scoreFloat.textContent=score;
+        }
+      }
+      pipes=pipes.filter(p=>p.x>-PIPE_W);
+      const mR=MOLE*0.7;
+      if(moleY<mR||moleY>H-mR)state='dead';
+      for(const p of pipes){if(80+mR>p.x&&80-mR<p.x+PIPE_W){if(moleY-mR<p.gapY||moleY+mR>p.gapY+PIPE_GAP)state='dead';}}
+      if(state==='dead'){
+        stopBg();playNote(200,0.4,0.15,'sawtooth');playNote(150,0.6,0.1,'sawtooth');
+        if(score>best){best=score;localStorage.setItem('flappy_best',String(best));}
+        scoreFloat.classList.add('hidden');deadOv.classList.remove('hidden');
+        finalScoreEl.textContent='Rezultat: '+score;bestScoreEl.textContent='Najbolji: '+best;
+      }
+    }
+    // BG
+    const bg=ctx.createLinearGradient(0,0,0,H);
+    bg.addColorStop(0,'#1a0f0a');bg.addColorStop(0.5,'#2a1a10');bg.addColorStop(1,'#1a0f0a');
+    ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(90,60,30,0.3)';
+    for(let i=0;i<30;i++){const px=((i*47+frame*0.5)%(W+20))-10,py=((i*73+i*i)%H);ctx.fillRect(px,py,2,2);}
+    const gc=['#4ade80','#38bdf8','#f59e0b'];
+    for(let i=0;i<5;i++){const gx=((i*97+frame*0.3)%(W+40))-20,gy=(i*131)%H;ctx.fillStyle=gc[i%3];ctx.globalAlpha=0.15+Math.sin(frame*0.05+i)*0.1;ctx.beginPath();ctx.moveTo(gx,gy-5);ctx.lineTo(gx+5,gy);ctx.lineTo(gx,gy+5);ctx.lineTo(gx-5,gy);ctx.closePath();ctx.fill();ctx.globalAlpha=1;}
+    for(const p of pipes){drawRock(p.x,0,PIPE_W,p.gapY,true);drawRock(p.x,p.gapY+PIPE_GAP,PIPE_W,H-p.gapY-PIPE_GAP,false);}
+    drawMole(80,moleY);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  canvas.addEventListener('click',jump);
+  canvas.addEventListener('touchstart',function(e){e.preventDefault();jump();},{passive:false});
+  window.addEventListener('keydown',function(e){if(e.code==='Space'||e.code==='ArrowUp'){e.preventDefault();jump();}});
+})();
+</script>
+</body>
+</html>
